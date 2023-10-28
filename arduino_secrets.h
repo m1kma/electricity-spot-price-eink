@@ -1,0 +1,2 @@
+#define SECRET_SSID_HOME "Poupoula"
+#define SECRET_PASS_HOME "S42L55B69HUH"
