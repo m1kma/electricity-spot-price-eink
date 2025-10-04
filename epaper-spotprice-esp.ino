@@ -1,5 +1,5 @@
 /*
- * (c) Mika Mäkelä - 2023
+ * (c) Mika Mäkelä - 2025
  * Show spot price of electricity on the e-ink display
  * Board: NodeMCU (ESP8266)
  */
@@ -42,21 +42,14 @@ void setup()
   Serial.print("Minutes: ");
   Serial.println(currentMinute); 
 
-  String url = "https://api.spot-hinta.fi/JustNow";
+  String url = "https://api.spot-hinta.fi/JustNow?priceResolution=60";
   String urlFuture = "https://api.spot-hinta.fi/JustNow?lookForwardHours=1";
+  //String urlFuture2 = "https://api.spot-hinta.fi/JustNow?lookForwardHours=2";
 
   // make request to the API
   String dataNow = callPriceAPI(url);
-
-  if (dataNow == "FAIL") {
-    dataNow = callPriceAPI(url);
-  }
-  
   String dataFuture = callPriceAPI(urlFuture);
-
-  if (dataFuture == "FAIL") {
-    dataFuture = callPriceAPI(urlFuture);
-  }
+  //String dataFuture2 = callPriceAPI(urlFuture2);
 
   // update content to the e-paper display
   drawEpaper(dataNow, dataFuture);
@@ -65,7 +58,7 @@ void setup()
 
 
   // Calculate sleep time. Sleep until the next price update that happens once per hour.
-  int sleepTimeMinutes = 60 - currentMinute + 5; 
+  int sleepTimeMinutes = 60 - currentMinute + 4; 
 
   Serial.print("Sleep delay: ");
   Serial.println(sleepTimeMinutes); 
@@ -89,7 +82,7 @@ void loop()
 String callPriceAPI(String url) {
 
   String payload = "";
-  
+
   //Check WiFi connection status
   if(WiFi.status()== WL_CONNECTED)  {
 
@@ -98,11 +91,13 @@ String callPriceAPI(String url) {
     HTTPClient https;
     
     Serial.print("[HTTPS] begin...\n");
-    
+
+    Serial.print(url);
+  
     if (https.begin(*client, url)) {  // HTTPS
 
       https.addHeader("accept", "application/json");
-      https.setTimeout(8000);
+      //https.setTimeout(8000);
 
       Serial.print("[HTTPS] GET...\n");
       // start connection and send HTTP header
@@ -125,6 +120,7 @@ String callPriceAPI(String url) {
       }
 
       https.end();
+      //http.setReuse(false);
       
     } else {
       Serial.printf("[HTTPS] Unable to connect\n");
@@ -144,20 +140,35 @@ void drawEpaper(String dataNow, String dataFuture)
 
   const size_t capacity = 2 * JSON_ARRAY_SIZE(0) + JSON_ARRAY_SIZE(1) + JSON_OBJECT_SIZE(7) + 800;
 
+  const String price = "";
+  double priceInt = 99;
+  double priceFutureInt = 99;
+  //double priceFuture2Int = 99;
+    
   DynamicJsonDocument doc(capacity);
-  deserializeJson(doc, dataNow);
 
-  DynamicJsonDocument docFuture(capacity);
-  deserializeJson(docFuture, dataFuture);
+  if (dataNow != "FAIL" && dataFuture != "FAIL") {
+    deserializeJson(doc, dataNow);
 
-  const String price = doc["PriceWithTax"];
-  double priceInt = price.toDouble();
-  priceInt = priceInt * 100;
+    DynamicJsonDocument docFuture(capacity);
+    deserializeJson(docFuture, dataFuture);
 
-  const String priceFuture = docFuture["PriceWithTax"];
-  double priceFutureInt = priceFuture.toDouble();
-  priceFutureInt = priceFutureInt * 100;
-  
+    //DynamicJsonDocument docFuture2(capacity);
+    //deserializeJson(docFuture2, dataFuture2);
+
+    const String price = doc["PriceWithTax"];
+    priceInt = price.toDouble();
+    priceInt = priceInt * 100;
+
+    const String priceFuture = docFuture["PriceWithTax"];
+    priceFutureInt = priceFuture.toDouble();
+    priceFutureInt = priceFutureInt * 100;
+
+    //const String priceFuture2 = docFuture2["PriceWithTax"];
+    //priceFuture2Int = priceFuture2.toDouble();
+    //priceFuture2Int = priceFuture2Int * 100;
+   }
+
   const String timestamp = doc["DateTime"];
 
   Serial.println(price);
@@ -192,6 +203,9 @@ void drawEpaper(String dataNow, String dataFuture)
 
     display.setCursor(30, 340);
     display.print(priceFutureInt);
+
+    //display.setCursor(30, 400);
+    //display.print(priceFuture2Int);
 
     display.setTextSize(2);
 
