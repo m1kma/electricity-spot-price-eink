@@ -1,7 +1,8 @@
 /*
  * (c) Mika Mäkelä - 2025
- * Show spot price of electricity on the e-ink display
+ * Show electricity spot price on the e-ink display
  * Board: NodeMCU (ESP8266)
+ * Display: Waveshare 5.83" E-INK RAW DISPLAY 600X448
  */
 
 #define ENABLE_GxEPD2_GFX 0
@@ -11,19 +12,20 @@
 #include <NTPClient.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <WiFiClientSecureBearSSL.h>
-#include <ArduinoJson.h>
 #include "arduino_secrets.h"
 
-GxEPD2_BW<GxEPD2_583, GxEPD2_583::HEIGHT / 2> display(GxEPD2_583(/*CS=D6*/ 5, /*DC=D3*/ 0, /*RST=D4*/ 2, /*BUSY=D2*/ 4));
+GxEPD2_BW<GxEPD2_583, GxEPD2_583::HEIGHT / 2> display(GxEPD2_583(5, 0, 2, 4));
 
 const char *ssid_home = SECRET_SSID_HOME;
 const char *password_home = SECRET_PASS_HOME;
 
-// Define NTP Client to get time
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
+
+double nextHours[12];   // store the next prices
+int currentMinute = 0;
+int currentHour = 0;
 
 void setup()
 {
@@ -32,97 +34,115 @@ void setup()
   delay(100);
   display.init(115200);
 
-  // connect to Wifi
   connectWifi();
 
   timeClient.begin();
-  timeClient.update();
+  while(!timeClient.update()) {
+    timeClient.forceUpdate();
+  }
 
-  int currentMinute = timeClient.getMinutes();
-  Serial.print("Minutes: ");
-  Serial.println(currentMinute); 
+  currentMinute = timeClient.getMinutes();
+  currentHour = timeClient.getHours() + 2;
 
-  String url = "https://api.spot-hinta.fi/JustNow?priceResolution=60";
-  String urlFuture = "https://api.spot-hinta.fi/JustNow?lookForwardHours=1";
-  //String urlFuture2 = "https://api.spot-hinta.fi/JustNow?lookForwardHours=2";
+  // Get Unix time from NTP
+  unsigned long epochTime = timeClient.getEpochTime();
+
+  // Convert to UTC date/time
+  time_t rawTime = epochTime;
+  struct tm * timeinfo = gmtime(&rawTime);
+
+  // Format timestamp: YYYY-MM-DDTHH:00:00.000Z
+  char timestamp[30];
+  sprintf(timestamp,
+          "%04d-%02d-%02dT%02d:00:00.000Z",
+          timeinfo->tm_year + 1900,
+          timeinfo->tm_mon + 1,
+          timeinfo->tm_mday,
+          timeinfo->tm_hour);
+
+  Serial.print("Current timestamp: ");
+  Serial.println(timestamp);
+
+  // CSV API URL with current timestamp
+  String url = String("https://sahkotin.fi/prices.csv?fix&vat&start=") + timestamp;
 
   // make request to the API
-  String dataNow = callPriceAPI(url);
-  String dataFuture = callPriceAPI(urlFuture);
-  //String dataFuture2 = callPriceAPI(urlFuture2);
+  String csvData = callPriceAPI(url);
+  
+  if (csvData == "FAIL") {
+    drawError("VIRHE TIETOJEN LATAUKSESSA");
+    ESP.deepSleep(300e6); // 300e6 = 5min
+  }
 
-  // update content to the e-paper display
-  drawEpaper(dataNow, dataFuture);
+  // parse CSV
+  double priceNow = 0.0;
+  double priceNext = 0.0;
+  String timestampNow = "";
+  parseCSV(csvData, priceNow, priceNext, timestampNow);
+
+  // update e-paper display
+  drawEpaper(priceNow, priceNext, timestampNow);
 
   Serial.println("setup done");
 
-
-  // Calculate sleep time. Sleep until the next price update that happens once per hour.
-  int sleepTimeMinutes = 60 - currentMinute + 4; 
-
+  int sleepTimeMinutes = 60 - currentMinute + 5; // ESP8266 deep sleep is inaccurate and few extra minutes should be added
   Serial.print("Sleep delay: ");
-  Serial.println(sleepTimeMinutes); 
+  Serial.println(sleepTimeMinutes);
 
-  unsigned int sleepTimeMicroseconds = 60000000;
-  sleepTimeMicroseconds = sleepTimeMinutes * 60000000;
+  unsigned int sleepTimeMicroseconds = sleepTimeMinutes * 60000000; // 60000000 = 60sec
 
-  // if sleep time is unusually small
-  if (sleepTimeMicroseconds < 60000000) {
+  if (sleepTimeMicroseconds < 60000000)
+  {
     ESP.deepSleep(900e6);
   }
 
-  // go to deep sleep
   ESP.deepSleep(sleepTimeMicroseconds);
 }
 
-void loop()
+void loop() {}
+
+
+// ================== API CALL =======================
+
+String callPriceAPI(String url)
 {
-}
-
-String callPriceAPI(String url) {
-
   String payload = "";
 
-  //Check WiFi connection status
-  if(WiFi.status()== WL_CONNECTED)  {
-
-    std::unique_ptr<BearSSL::WiFiClientSecure>client(new BearSSL::WiFiClientSecure);
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
     client->setInsecure();
+
     HTTPClient https;
-    
     Serial.print("[HTTPS] begin...\n");
-
     Serial.print(url);
-  
-    if (https.begin(*client, url)) {  // HTTPS
 
-      https.addHeader("accept", "application/json");
-      //https.setTimeout(8000);
+    if (https.begin(*client, url))
+    {
+      https.addHeader("accept", "text/csv");
 
       Serial.print("[HTTPS] GET...\n");
-      // start connection and send HTTP header
       int httpCode = https.GET();
 
-      // httpCode will be negative on error
-      if (httpCode > 0) {
-        
-        // HTTP header has been send and Server response header has been handled
+      if (httpCode > 0)
+      {
         Serial.printf("[HTTPS] GET... code: %d\n", httpCode);
-
-        if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+        if (httpCode == HTTP_CODE_OK)
+        {
           payload = https.getString();
-          Serial.println(payload);
+          Serial.print(payload);
         }
-        
-      } else {
+      }
+      else
+      {
         Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(httpCode).c_str());
         payload = "FAIL";
       }
 
       https.end();
-      //http.setReuse(false);
-      
-    } else {
+    }
+    else
+    {
       Serial.printf("[HTTPS] Unable to connect\n");
       payload = "FAIL";
     }
@@ -133,92 +153,197 @@ String callPriceAPI(String url) {
   return payload;
 }
 
-// Draw the content to the e-ink display
-void drawEpaper(String dataNow, String dataFuture)
+
+// ================== CSV PARSE =======================
+
+void parseCSV(String csv, double &priceNow, double &priceNext, String &timestampNow)
+{
+  Serial.print("CSV Parse...");
+
+  if (csv == "FAIL") return;
+
+  int lineStart = csv.indexOf('\n') + 1;
+  int i = 0;
+  double lastValue = 0;
+
+  while (i < 12)
+  {
+    int lineEnd = csv.indexOf('\n', lineStart);
+
+    if (lineEnd == -1)   // no more rows
+    {
+      // fill remaining bars with 0
+      for (int j = i; j < 12; j++)
+      {
+        nextHours[j] = 0;
+      }
+      break;
+    }
+
+    String line = csv.substring(lineStart, lineEnd);
+
+    int comma = line.indexOf(',');
+    if (comma == -1) break;
+
+    String ts = line.substring(0, comma);
+    double value = line.substring(comma + 1).toFloat();
+
+    if (i == 0)
+    {
+      timestampNow = ts;
+      priceNow = value;
+    }
+    if (i == 1)
+    {
+      priceNext = value;
+    }
+
+    nextHours[i] = value;
+    lastValue = value;
+
+    lineStart = lineEnd + 1;
+    i++;
+  }
+
+  // If no data at all, ensure array is zero
+  if (i == 0)
+  {
+    for (int k = 0; k < 10; k++)
+      nextHours[k] = 0;
+  }
+}
+
+
+// ================== DRAW FUNCTIONS =======================
+
+void drawBarChart(int originX, int originY, int width, int height)
+{
+  Serial.print("drawBarChart...");
+
+  display.setTextSize(2);
+  display.setCursor(200, 355);
+  display.print("Seuraavat 12 tuntia");
+
+  const double MAX_VALUE = 30.0;   // chart always scaled 0–30
+
+  int barWidth = width / 12;
+
+  for (int i = 0; i < 12; i++)
+  {
+    double value = nextHours[i];
+
+    // Clamp value to 0–30 range
+    if (value < 0) value = 0;
+    if (value > MAX_VALUE) value = MAX_VALUE;
+
+    // Normalize to chart height
+    double normalized = value / MAX_VALUE;
+    int barHeight = normalized * height;
+
+    int x = originX + (i * barWidth);
+    int y = originY + height - barHeight;
+
+    display.fillRect(
+      x + 2,
+      y,
+      barWidth - 4,
+      barHeight,
+      GxEPD_BLACK
+    );
+  }
+
+  // Outline box
+  display.drawRect(originX, originY, width, height, GxEPD_BLACK);
+  
+  // ===== Reference lines + labels =====
+  int values[3] = {10, 20, 30};
+
+  for (int i = 0; i < 3; i++)
+  {
+    int val = values[i];
+
+    int y = originY + height - ( (val / MAX_VALUE) * height );
+
+    // draw line
+    display.drawLine(originX, y, originX + width, y, GxEPD_BLACK);
+    display.drawLine(originX, y+1, originX + width, y+1, GxEPD_WHITE);
+
+    // thicker/bolder looking text
+    display.setTextSize(2);
+
+    display.setCursor(originX + 5, y + 5);
+    display.print(val);
+  }
+}
+
+
+void drawEpaper(double priceNow, double priceNext, String timestamp)
 {
   Serial.println("drawEpaper");
-
-  const size_t capacity = 2 * JSON_ARRAY_SIZE(0) + JSON_ARRAY_SIZE(1) + JSON_OBJECT_SIZE(7) + 800;
-
-  const String price = "";
-  double priceInt = 99;
-  double priceFutureInt = 99;
-  //double priceFuture2Int = 99;
-    
-  DynamicJsonDocument doc(capacity);
-
-  if (dataNow != "FAIL" && dataFuture != "FAIL") {
-    deserializeJson(doc, dataNow);
-
-    DynamicJsonDocument docFuture(capacity);
-    deserializeJson(docFuture, dataFuture);
-
-    //DynamicJsonDocument docFuture2(capacity);
-    //deserializeJson(docFuture2, dataFuture2);
-
-    const String price = doc["PriceWithTax"];
-    priceInt = price.toDouble();
-    priceInt = priceInt * 100;
-
-    const String priceFuture = docFuture["PriceWithTax"];
-    priceFutureInt = priceFuture.toDouble();
-    priceFutureInt = priceFutureInt * 100;
-
-    //const String priceFuture2 = docFuture2["PriceWithTax"];
-    //priceFuture2Int = priceFuture2.toDouble();
-    //priceFuture2Int = priceFuture2Int * 100;
-   }
-
-  const String timestamp = doc["DateTime"];
-
-  Serial.println(price);
-  Serial.println(priceInt);
 
   display.setRotation(1);
   display.setTextColor(GxEPD_BLACK);
 
   display.setFullWindow();
   display.firstPage();
-  
   do
   {
     display.fillScreen(GxEPD_WHITE);
 
-    display.setTextSize(4);
-
-    display.setCursor(10, 50);
-    display.print("Hinta nyt:"); // price now
-
-    display.setTextSize(13);
-
-    display.setCursor(30, 120);
-    display.print(priceInt);
-    
-    display.setTextSize(4);
-
-    display.setCursor(10, 280);
-    display.print("Seuraava tunti:"); // next hour
-
-    display.setTextSize(13);
-
-    display.setCursor(30, 340);
-    display.print(priceFutureInt);
-
-    //display.setCursor(30, 400);
-    //display.print(priceFuture2Int);
-
+    // --- Current time ---
     display.setTextSize(2);
+    display.setCursor(340, 10);
+    display.print(currentHour);
+    display.print(":");
+    if (currentMinute < 10) display.print("0");
+    display.print(currentMinute);
 
-    display.setCursor(10, 520);
-    display.print("Paivitetty:"); // update timestamp
+    // --- Current price ---
+    display.setTextSize(4);
+    display.setCursor(10, 20);
+    display.print("Hinta nyt");
 
-    display.setCursor(10, 540);
-    display.print(timestamp);
+    display.setTextSize(13);
+    display.setCursor(30, 90);
+    display.print(priceNow);
+
+    // --- Next hour price ---
+    display.setTextSize(4);
+    display.setCursor(10, 230);
+    display.print("Seuraava tunti");
+
+    display.setTextSize(5);
+    display.setCursor(30, 275);
+    display.print(priceNext);
+
+    drawBarChart(5, 350, 428, 240);
 
   } while (display.nextPage());
 
   Serial.println("drawEpaper done");
 }
+
+void drawError(String errorMsg)
+{
+  display.setRotation(1);
+  display.setTextColor(GxEPD_BLACK);
+
+  display.setFullWindow();
+  display.firstPage();
+  do
+  {
+    display.fillScreen(GxEPD_WHITE);
+
+    // --- Current price ---
+    display.setTextSize(3);
+    display.setCursor(10, 100);
+    display.print(errorMsg);
+
+  } while (display.nextPage());
+}
+
+
+// ================== WIFI =======================
 
 void connectWifi()
 {
@@ -230,12 +355,12 @@ void connectWifi()
 
   while (WiFi.status() != WL_CONNECTED)
   {
-    delay(500);
+    delay(1000);
     Serial.print(".");
-
     if (WiFi.status() == WL_NO_SSID_AVAIL)
     {
       WiFi.disconnect();
+      drawError("VIRHE WIFI YHTEYDESSA");
       ESP.deepSleep(600e6);
       break;
     }

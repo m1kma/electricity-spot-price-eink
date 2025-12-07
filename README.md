@@ -1,23 +1,27 @@
-# Show electricity spot price on the e-ink display
+# Displaying Electricity Spot Prices on an E-Ink Display
 
-NodeMCU (ESP8266) based project to display electricity spot price on the epaper (e-ink) display. The project is usefull when the apartment electricity contract is tied to the spot price and you want to follow the current price. The price is fetch from the Finnish public API endpoint that returns national price information. 
+This is a NodeMCU (ESP8266)-based project that displays electricity spot prices on an e-paper (e-ink) display. Prices are fetched from a public Finnish API that provides national electricity price data.
 
-The board is woken up once per hour to fetch the data and refresh the display. This will happen few minutes after even hour. Meanwhile the board is put to the deepsleep mode. The required sleep time is calculated by the current time.
+The current price and the next hour’s price are shown as numeric values. The prices for the next 12 hours are displayed as a bar chart.
 
-The Wifi secrets are kept in the separate file `arduino_secrets.h` that is not part of this repo.
+The board wakes up once per hour to fetch new data and refresh the display. This happens a few minutes after each full hour. Between updates the board is put into deep sleep mode to save power.
 
-## Data endpoints:
-- https://spot-hinta.fi/
-- https://api.spot-hinta.fi/swagger/ui#/
+The data is fetched in CSV format. I found that CSV is significantly faster to parse and uses less memory than JSON. I was not able to fetch a 12-hour time frame using JSON, but the CSV format works without issues.
+
+## Data source
+
+- https://sahkotin.fi
 
 ## Required components
+
 - NodeMCU board (or similar)
-- Epaper Waveshare 5.83" E-INK RAW DISPLAY 600X448 (or similar)
+- Waveshare 5.83" E-Ink Raw Display (600 × 448) or similar
 - Waveshare Universal e-Paper Raw Panel Driver Shield for Arduino / NUCLEO
-- Photo frame for the solid endresult
+- Photo frame (for a clean, finished look)
 
 ## Images
-I fit the e-ink display to the photo frame.
 
-![fontside](img/price-epaper-2.jpg)
-![backside](img/price-epaper-1.jpg)
+The board is attached to the photo frame for the nice end result.
+
+![fontside](img/price-epaper-11.jpg)
+![backside](img/price-epaper-10.jpg)
